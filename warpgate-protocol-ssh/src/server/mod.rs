@@ -126,7 +126,12 @@ async fn _handle_connection(
             auth_rejection_time: Duration::from_secs(1),
             auth_rejection_time_initial: Some(Duration::from_secs(0)),
             // Extra time for the "closing due to inactivity" message to be sent
-            inactivity_timeout: Some(config.store.ssh.inactivity_timeout + Duration::from_secs(10)),
+            // When inactivity_timeout is 0, disable russh's own inactivity timeout
+            inactivity_timeout: if config.store.ssh.inactivity_timeout.is_zero() {
+                None
+            } else {
+                Some(config.store.ssh.inactivity_timeout + Duration::from_secs(10))
+            },
             keepalive_interval: config.store.ssh.keepalive_interval,
             methods: get_allowed_auth_methods(&services).await?,
             keys: russh_config_init.keys.clone(),

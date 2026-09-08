@@ -668,7 +668,12 @@ impl RemoteClient {
             preferred: algos,
             nodelay: true,
             // Extra time for the "closing due to inactivity" message to be sent
-            inactivity_timeout: Some(ssh_config.inactivity_timeout + Duration::from_secs(10)),
+            // When inactivity_timeout is 0, disable russh's own inactivity timeout
+            inactivity_timeout: if ssh_config.inactivity_timeout.is_zero() {
+                None
+            } else {
+                Some(ssh_config.inactivity_timeout + Duration::from_secs(10))
+            },
             keepalive_interval: ssh_config.keepalive_interval,
             ..Default::default()
         };
