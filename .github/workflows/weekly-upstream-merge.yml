@@ -24,7 +24,9 @@ env:
 jobs:
   merge:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # 三轮 AI 各有 2400s(40min)硬超时,极端串联 120min + fetch/merge/verify
+    # 余量,故总超时须大于 90min,否则第三轮会被 job 超时截断
+    timeout-minutes: 150
 
     steps:
       # 与仓库其他 workflow 相同的 SHA pin(actions/checkout v4)
@@ -33,6 +35,13 @@ jobs:
           ref: main
           fetch-depth: 0
           persist-credentials: true
+
+      # warpgate-web 的 #[derive(RustEmbed)] 要求 ../warpgate-web/dist 在编译期
+      # 存在,而 dist 是 gitignored 构建产物。与 clippy.yml/check-schema 工作流
+      # 相同约定:打桩空目录即可通过 cargo check(空 Assets 会在运行时查
+      # manifest 失败,但不影响合并验证)
+      - name: Stub web assets for RustEmbed
+        run: mkdir -p warpgate-web/dist
 
       - name: Configure git
         run: |
@@ -112,6 +121,11 @@ jobs:
                combine them, keep the upstream side (theirs).
             3. Run `cargo check -p <affected-crate>` (pick crates from the conflicted file
                paths) to verify the result compiles. Fix any compile errors you introduced.
+               Do NOT run `cargo check -p warpgate-web` alone or try to "fix" its
+               serde_json/alloc feature error - that error is an artifact of checking
+               a single crate in this workspace (feature unification is off) and does
+               not occur in the real workspace build. Never edit Cargo.toml [features]
+               or dependency lists to silence it.
             4. After ALL conflicts are resolved and cargo check passes, run:
                `git add -A && git commit -m "chore: merge upstream/main"`
                (This exact format is required: a commit-msg hook rejects messages that do
@@ -133,15 +147,16 @@ jobs:
           ! git grep -qE '^<<<<<<< |^>>>>>>> '
           [ "$(git rev-list --parents -n 1 HEAD | wc -w)" -ge 3 ]
 
-      # 第 1 轮失败:回滚合并提交,回到冲突状态
       - name: Round 1 failed - reset to conflicted state
         if: steps.merge.outputs.conflicts == 'true' && steps.check1.outcome == 'failure'
         run: |
           set -euo pipefail
+          # 丢弃第 1 轮 AI 的错误/部分结果,回到合并前基点并重放冲突。
+          # 不用临时分支:merge 冲突期间 HEAD 仍在 main,提交自然落在 main 上。
+          # (旧的 conflict-base 舞步会让 git branch -D 因"删除当前分支"失败,
+          # 后续 AI 提交全部落在临时分支上,push origin main 推空。)
           git reset -q --hard "$BASE_HEAD"
-          git checkout -q -b conflict-base HEAD 2>/dev/null || true
           git merge upstream/main --no-edit || true
-          git branch -D conflict-base 2>/dev/null || true
           echo "::warning::Round 1 failed, retrying with a fresh model pick"
 
       - name: Round 2 - Resolve conflicts with AI
@@ -171,6 +186,11 @@ jobs:
                combine them, keep the upstream side (theirs).
             3. Run `cargo check -p <affected-crate>` (pick crates from the conflicted file
                paths) to verify the result compiles. Fix any compile errors you introduced.
+               Do NOT run `cargo check -p warpgate-web` alone or try to "fix" its
+               serde_json/alloc feature error - that error is an artifact of checking
+               a single crate in this workspace (feature unification is off) and does
+               not occur in the real workspace build. Never edit Cargo.toml [features]
+               or dependency lists to silence it.
             4. After ALL conflicts are resolved and cargo check passes, run:
                `git add -A && git commit -m "chore: merge upstream/main"`
                (This exact format is required: a commit-msg hook rejects messages that do
@@ -192,15 +212,13 @@ jobs:
           ! git grep -qE '^<<<<<<< |^>>>>>>> '
           [ "$(git rev-list --parents -n 1 HEAD | wc -w)" -ge 3 ]
 
-      # 第 2 轮失败:再次回滚到冲突状态
+      # 第 2 轮失败:回滚到冲突状态(同 Round 1 reset,不用临时分支)
       - name: Round 2 failed - reset to conflicted state
         if: steps.merge.outputs.conflicts == 'true' && steps.check2.outcome == 'failure'
         run: |
           set -euo pipefail
           git reset -q --hard "$BASE_HEAD"
-          git checkout -q -b conflict-base HEAD 2>/dev/null || true
           git merge upstream/main --no-edit || true
-          git branch -D conflict-base 2>/dev/null || true
           echo "::warning::Round 2 failed, one more retry"
 
       - name: Round 3 - Resolve conflicts with AI
@@ -230,6 +248,11 @@ jobs:
                combine them, keep the upstream side (theirs).
             3. Run `cargo check -p <affected-crate>` (pick crates from the conflicted file
                paths) to verify the result compiles. Fix any compile errors you introduced.
+               Do NOT run `cargo check -p warpgate-web` alone or try to "fix" its
+               serde_json/alloc feature error - that error is an artifact of checking
+               a single crate in this workspace (feature unification is off) and does
+               not occur in the real workspace build. Never edit Cargo.toml [features]
+               or dependency lists to silence it.
             4. After ALL conflicts are resolved and cargo check passes, run:
                `git add -A && git commit -m "chore: merge upstream/main"`
                (This exact format is required: a commit-msg hook rejects messages that do
@@ -268,5 +291,13 @@ jobs:
         if: steps.merge.outputs.merged == 'true' || steps.merge.outputs.conflicts == 'true'
         run: |
           set -euo pipefail
+          # 成功合并的提交必须落在 main 上:冲突解决轮次可能把 HEAD 留在
+          # 临时分支(原 conflict-base 舞步会因“删除当前分支”失败而静默
+          # 留在临时分支),此时 push origin main 会推空或非快进失败。
+          git rev-parse --verify -q main > /dev/null
+          if [ "$(git rev-parse HEAD)" != "$(git rev-parse main)" ]; then
+            echo "::error::HEAD is not on main (on $(git branch --show-current)) - refusing to push"
+            exit 1
+          fi
           git push origin main
           echo "Pushed main $(git rev-parse --short HEAD) (merged upstream $(git rev-parse --short "$UPSTREAM_HEAD"))"
