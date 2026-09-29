@@ -9,9 +9,9 @@ on:
   schedule:
     - cron: "17 1 * * 0" # 每周日 01:17 UTC(北京时间 09:17,错开整点高峰)
   workflow_dispatch: {} # 支持手动触发
-
 permissions:
   contents: write
+  id-token: write
 
 concurrency:
   group: weekly-upstream-merge
@@ -29,13 +29,11 @@ jobs:
     timeout-minutes: 150
 
     steps:
-      # 与仓库其他 workflow 相同的 SHA pin(actions/checkout v4)
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: main
           fetch-depth: 0
-          persist-credentials: true
-
+          persist-credentials: false
       # warpgate-web 的 #[derive(RustEmbed)] 要求 ../warpgate-web/dist 在编译期
       # 存在,而 dist 是 gitignored 构建产物。与 clippy.yml/check-schema 工作流
       # 相同约定:打桩空目录即可通过 cargo check(空 Assets 会在运行时查
@@ -43,10 +41,10 @@ jobs:
       - name: Stub web assets for RustEmbed
         run: mkdir -p warpgate-web/dist
 
-      - name: Configure git
+      - name: Configure Git User
         run: |
-          git config user.name "warpgate-bot"
-          git config user.email "bot@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
       # 仓库 rust-toolchain.toml pin 到 nightly-2026-07-09,且 .cargo/config.toml
       # 使用 -Zthreads 等 nightly-only 标志,必须在 AI 与验证步骤前装好工具链
@@ -99,7 +97,7 @@ jobs:
         if: steps.merge.outputs.conflicts == 'true'
         uses: cv/pi-action@v1
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ secrets.PAT }}
           output_mode: output
           timeout: "2400"
           provider: openrouter
@@ -164,7 +162,7 @@ jobs:
         if: steps.merge.outputs.conflicts == 'true' && steps.check1.outcome == 'failure'
         uses: cv/pi-action@v1
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ secrets.PAT }}
           output_mode: output
           timeout: "2400"
           provider: openrouter
@@ -226,7 +224,7 @@ jobs:
         if: steps.merge.outputs.conflicts == 'true' && steps.check2.outcome == 'failure'
         uses: cv/pi-action@v1
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ secrets.PAT }}
           output_mode: output
           timeout: "2400"
           provider: openrouter
@@ -299,5 +297,9 @@ jobs:
             echo "::error::HEAD is not on main (on $(git branch --show-current)) - refusing to push"
             exit 1
           fi
+          # 合并可能含 .github/workflows/ 变更,GITHUB_TOKEN 无 workflow 写入权限,需 PAT 推送。
+          # checkout 用 persist-credentials:false 避免 GITHUB_TOKEN 的 extraheader 污染,
+          # 此处直接用 PAT 重写 origin URL 推送即可。
+          git remote set-url origin "https://x-access-token:${{ secrets.PAT }}@github.com/${{ github.repository }}.git"
           git push origin main
           echo "Pushed main $(git rev-parse --short HEAD) (merged upstream $(git rev-parse --short "$UPSTREAM_HEAD"))"
