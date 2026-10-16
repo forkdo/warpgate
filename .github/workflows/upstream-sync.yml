@@ -1,0 +1,325 @@
+name: Upstream Sync
+
+# 每 3 天自动合并上游 warp-tech/warpgate 的 main 分支。
+# 无冲突:直接合并推送;有冲突:调 pi-action(AI)解决后验证再推送;
+# AI 解决失败或验证失败:中止合并(merge --abort),工作流置为失败,等待人工处理。
+# 注意:GitHub 的 schedule 在无活动 60 天后会自动禁用本工作流,需手动重新启用。
+
+on:
+  schedule:
+    - cron: "17 1 */3 * *" # 每 3 天 01:17 UTC(北京时间 09:17,错开整点高峰;按月内日期取模,月初会顺延)
+  workflow_dispatch: {} # 支持手动触发
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: https://github.com/warp-tech/warpgate.git
+  UPSTREAM_BRANCH: main
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    # 三轮 AI 各有 2400s(40min)硬超时,极端串联 120min + fetch/merge/verify
+    # 余量,故总超时须大于 90min,否则第三轮会被 job 超时截断
+    timeout-minutes: 150
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      # warpgate-web 的 #[derive(RustEmbed)] 要求 ../warpgate-web/dist 在编译期
+      # 存在,而 dist 是 gitignored 构建产物。与 clippy.yml/check-schema 工作流
+      # 相同约定:打桩空目录即可通过 cargo check(空 Assets 会在运行时查
+      # manifest 失败,但不影响合并验证)
+      - name: Stub web assets for RustEmbed
+        run: mkdir -p warpgate-web/dist
+
+      - name: Configure Git User
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      # 仓库 rust-toolchain.toml pin 到 nightly-2026-07-09,且 .cargo/config.toml
+      # 使用 -Zthreads 等 nightly-only 标志,必须在 AI 与验证步骤前装好工具链
+      - name: Rust toolchain (nightly-2026-07-09, per rust-toolchain.toml)
+        run: rustup toolchain install nightly-2026-07-09 --profile minimal
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream "$UPSTREAM_REPO"
+          git fetch upstream "$UPSTREAM_BRANCH"
+          echo "UPSTREAM_HEAD=$(git rev-parse upstream/main)" >> "$GITHUB_ENV"
+
+      - name: Check for changes
+        id: changes
+        run: |
+          AHEAD=$(git rev-list --count main..upstream/main)
+          echo "count=$AHEAD" >> "$GITHUB_OUTPUT"
+          echo "Upstream is $AHEAD commit(s) ahead"
+
+      - name: Merge upstream (fast-forward or clean merge)
+        id: merge
+        if: steps.changes.outputs.count != '0'
+        run: |
+          set -euo pipefail
+          # 记录合并前的本地 HEAD,失败时用于回退
+          echo "BASE_HEAD=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+          if git merge upstream/main --no-edit; then
+            echo "merged=true" >> "$GITHUB_OUTPUT"
+            echo "conflicts=false" >> "$GITHUB_OUTPUT"
+          elif git ls-files --unmerged | grep -q .; then
+            echo "merged=false" >> "$GITHUB_OUTPUT"
+            echo "conflicts=true" >> "$GITHUB_OUTPUT"
+          else
+            # merge 失败但没有冲突文件(如无法合并的历史),放弃
+            git merge --abort || true
+            echo "::error::Merge failed without conflicts - aborting"
+            exit 1
+          fi
+
+      # ---------- 有冲突:交给 AI 解决 ----------
+
+      # openrouter/free 是 OpenRouter 的路由入口,每轮从当前可用的 free 模型中
+      # 选取,不依赖单一模型的可用性。路由可能随机到较弱的模型,故最多重试 3 轮:
+      # 每轮结束后由 "Round N check" 验证;失败则回滚到冲突状态重试。
+      # 三轮全败则中止合并,工作流置为失败,等待人工处理。
+
+      - name: Round 1 - Resolve conflicts with AI
+        id: ai1
+        if: steps.merge.outputs.conflicts == 'true'
+        uses: cv/pi-action@v1
+        with:
+          github_token: ${{ secrets.PAT }}
+          output_mode: output
+          timeout: "2400"
+          provider: openrouter
+          model: openrouter/free
+          prompt: |
+            You are resolving git merge conflicts in a Rust SSH gateway project.
+
+            The repo is a fork of warp-tech/warpgate. `git merge upstream/main` was run and
+            stopped with conflicts. Your job:
+
+            1. Run `git diff --name-only --diff-filter=U` to list conflicted files.
+            2. For each file, read the conflict markers (<<<<<<< HEAD / ======= / >>>>>>>)
+               and resolve them by combining BOTH sides' intent:
+               - HEAD (ours) contains this fork's own changes (e.g. the SSH inactivity_timeout=0
+                 fix that disables the inactivity timeout when it is set to 0).
+               - upstream/main (theirs) contains the upstream feature changes.
+               The correct resolution usually keeps the fork's semantics while adopting the
+               upstream structure. Never delete either side's feature. If truly unsure how to
+               combine them, keep the upstream side (theirs).
+            3. Run `cargo check -p <affected-crate>` (pick crates from the conflicted file
+               paths) to verify the result compiles. Fix any compile errors you introduced.
+               Do NOT run `cargo check -p warpgate-web` alone or try to "fix" its
+               serde_json/alloc feature error - that error is an artifact of checking
+               a single crate in this workspace (feature unification is off) and does
+               not occur in the real workspace build. Never edit Cargo.toml [features]
+               or dependency lists to silence it.
+            4. After ALL conflicts are resolved and cargo check passes, run:
+               `git add -A && git commit -m "chore: merge upstream/main"`
+               (This exact format is required: a commit-msg hook rejects messages that do
+               not start with a conventional-commit type like "chore:".)
+               Do NOT add any Co-Authored-By or Generated-with lines to the commit message.
+            5. When done, reply with a short summary of each conflict and how you resolved it.
+
+            Do NOT push. Do NOT run cargo test or full builds. Do NOT rewrite history.
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+
+      - name: Round 1 check
+        id: check1
+        if: steps.merge.outputs.conflicts == 'true'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          ! git ls-files --unmerged | grep -q .
+          ! git grep -qE '^<<<<<<< |^>>>>>>> '
+          [ "$(git rev-list --parents -n 1 HEAD | wc -w)" -ge 3 ]
+
+      - name: Round 1 failed - reset to conflicted state
+        if: steps.merge.outputs.conflicts == 'true' && steps.check1.outcome == 'failure'
+        run: |
+          set -euo pipefail
+          # 丢弃第 1 轮 AI 的错误/部分结果,回到合并前基点并重放冲突。
+          # 不用临时分支:merge 冲突期间 HEAD 仍在 main,提交自然落在 main 上。
+          # (旧的 conflict-base 舞步会让 git branch -D 因"删除当前分支"失败,
+          # 后续 AI 提交全部落在临时分支上,push origin main 推空。)
+          git reset -q --hard "$BASE_HEAD"
+          git merge upstream/main --no-edit || true
+          echo "::warning::Round 1 failed, retrying with a fresh model pick"
+
+      - name: Round 2 - Resolve conflicts with AI
+        id: ai2
+        if: steps.merge.outputs.conflicts == 'true' && steps.check1.outcome == 'failure'
+        uses: cv/pi-action@v1
+        with:
+          github_token: ${{ secrets.PAT }}
+          output_mode: output
+          timeout: "2400"
+          provider: openrouter
+          model: openrouter/free
+          prompt: |
+            You are resolving git merge conflicts in a Rust SSH gateway project.
+
+            The repo is a fork of warp-tech/warpgate. `git merge upstream/main` was run and
+            stopped with conflicts. Your job:
+
+            1. Run `git diff --name-only --diff-filter=U` to list conflicted files.
+            2. For each file, read the conflict markers (<<<<<<< HEAD / ======= / >>>>>>>)
+               and resolve them by combining BOTH sides' intent:
+               - HEAD (ours) contains this fork's own changes (e.g. the SSH inactivity_timeout=0
+                 fix that disables the inactivity timeout when it is set to 0).
+               - upstream/main (theirs) contains the upstream feature changes.
+               The correct resolution usually keeps the fork's semantics while adopting the
+               upstream structure. Never delete either side's feature. If truly unsure how to
+               combine them, keep the upstream side (theirs).
+            3. Run `cargo check -p <affected-crate>` (pick crates from the conflicted file
+               paths) to verify the result compiles. Fix any compile errors you introduced.
+               Do NOT run `cargo check -p warpgate-web` alone or try to "fix" its
+               serde_json/alloc feature error - that error is an artifact of checking
+               a single crate in this workspace (feature unification is off) and does
+               not occur in the real workspace build. Never edit Cargo.toml [features]
+               or dependency lists to silence it.
+            4. After ALL conflicts are resolved and cargo check passes, run:
+               `git add -A && git commit -m "chore: merge upstream/main"`
+               (This exact format is required: a commit-msg hook rejects messages that do
+               not start with a conventional-commit type like "chore:".)
+               Do NOT add any Co-Authored-By or Generated-with lines to the commit message.
+            5. When done, reply with a short summary of each conflict and how you resolved it.
+
+            Do NOT push. Do NOT run cargo test or full builds. Do NOT rewrite history.
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+
+      - name: Round 2 check
+        id: check2
+        if: steps.merge.outputs.conflicts == 'true' && steps.check1.outcome == 'failure'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          ! git ls-files --unmerged | grep -q .
+          ! git grep -qE '^<<<<<<< |^>>>>>>> '
+          [ "$(git rev-list --parents -n 1 HEAD | wc -w)" -ge 3 ]
+
+      # 第 2 轮失败:回滚到冲突状态(同 Round 1 reset,不用临时分支)
+      - name: Round 2 failed - reset to conflicted state
+        if: steps.merge.outputs.conflicts == 'true' && steps.check2.outcome == 'failure'
+        run: |
+          set -euo pipefail
+          git reset -q --hard "$BASE_HEAD"
+          git merge upstream/main --no-edit || true
+          echo "::warning::Round 2 failed, one more retry"
+
+      - name: Round 3 - Resolve conflicts with AI
+        id: ai3
+        if: steps.merge.outputs.conflicts == 'true' && steps.check2.outcome == 'failure'
+        uses: cv/pi-action@v1
+        with:
+          github_token: ${{ secrets.PAT }}
+          output_mode: output
+          timeout: "2400"
+          provider: openrouter
+          model: openrouter/free
+          prompt: |
+            You are resolving git merge conflicts in a Rust SSH gateway project.
+
+            The repo is a fork of warp-tech/warpgate. `git merge upstream/main` was run and
+            stopped with conflicts. Your job:
+
+            1. Run `git diff --name-only --diff-filter=U` to list conflicted files.
+            2. For each file, read the conflict markers (<<<<<<< HEAD / ======= / >>>>>>>)
+               and resolve them by combining BOTH sides' intent:
+               - HEAD (ours) contains this fork's own changes (e.g. the SSH inactivity_timeout=0
+                 fix that disables the inactivity timeout when it is set to 0).
+               - upstream/main (theirs) contains the upstream feature changes.
+               The correct resolution usually keeps the fork's semantics while adopting the
+               upstream structure. Never delete either side's feature. If truly unsure how to
+               combine them, keep the upstream side (theirs).
+            3. Run `cargo check -p <affected-crate>` (pick crates from the conflicted file
+               paths) to verify the result compiles. Fix any compile errors you introduced.
+               Do NOT run `cargo check -p warpgate-web` alone or try to "fix" its
+               serde_json/alloc feature error - that error is an artifact of checking
+               a single crate in this workspace (feature unification is off) and does
+               not occur in the real workspace build. Never edit Cargo.toml [features]
+               or dependency lists to silence it.
+            4. After ALL conflicts are resolved and cargo check passes, run:
+               `git add -A && git commit -m "chore: merge upstream/main"`
+               (This exact format is required: a commit-msg hook rejects messages that do
+               not start with a conventional-commit type like "chore:".)
+               Do NOT add any Co-Authored-By or Generated-with lines to the commit message.
+            5. When done, reply with a short summary of each conflict and how you resolved it.
+
+            Do NOT push. Do NOT run cargo test or full builds. Do NOT rewrite history.
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+
+      # 三轮全败:中止合并,工作流失败
+      - name: Final check - all rounds exhausted
+        if: steps.merge.outputs.conflicts == 'true' && steps.check2.outcome == 'failure'
+        run: |
+          set -euo pipefail
+          ! git ls-files --unmerged | grep -q .
+          ! git grep -qE '^<<<<<<< |^>>>>>>> '
+          [ "$(git rev-list --parents -n 1 HEAD | wc -w)" -ge 3 ]
+          echo "AI resolution verified"
+
+      # ---------- 验证合并结果 ----------
+
+      - name: Verify merged code compiles
+        if: steps.merge.outputs.merged == 'true' || steps.merge.outputs.conflicts == 'true'
+        run: |
+          set -euo pipefail
+          # 对整个合并结果统一验证(工具链已由 rustup 按 rust-toolchain.toml 选择)
+          if ! cargo check --workspace 2>&1; then
+            echo "::error::cargo check failed on merged result - aborting"
+            git merge --abort 2>/dev/null || git reset --hard "$BASE_HEAD"
+            exit 1
+          fi
+
+      - name: Push merged main
+        if: steps.merge.outputs.merged == 'true' || steps.merge.outputs.conflicts == 'true'
+        run: |
+          set -euo pipefail
+          # 成功合并的提交必须落在 main 上:冲突解决轮次可能把 HEAD 留在
+          # 临时分支(原 conflict-base 舞步会因“删除当前分支”失败而静默
+          # 留在临时分支),此时 push origin main 会推空或非快进失败。
+          git rev-parse --verify -q main > /dev/null
+          if [ "$(git rev-parse HEAD)" != "$(git rev-parse main)" ]; then
+            echo "::error::HEAD is not on main (on $(git branch --show-current)) - refusing to push"
+            exit 1
+          fi
+          # 合并可能含 .github/workflows/ 变更,GITHUB_TOKEN 无 workflow 写入权限,需 PAT 推送。
+          # checkout 用 persist-credentials:false 避免 GITHUB_TOKEN 的 extraheader 污染,
+          # 此处直接用 PAT 重写 origin URL 推送即可。
+          git remote set-url origin "https://x-access-token:${{ secrets.PAT }}@github.com/${{ github.repository }}.git"
+          git push origin main
+          echo "Pushed main $(git rev-parse --short HEAD) (merged upstream $(git rev-parse --short "$UPSTREAM_HEAD"))"
+
+      - name: Tag merged main with upstream release
+        if: steps.merge.outputs.merged == 'true' || steps.merge.outputs.conflicts == 'true'
+        run: |
+          set -euo pipefail
+          # 把上游最新的 v* 官方 tag 重打到本次合并结果(main HEAD)上:
+          # fork 的 tag 语义 = 上游发布内容 + fork 自身修改,即指向合并提交,
+          # 而非上游原始发布提交。CI 无 GPG 私钥,故为附注标签(无签名)。
+          git fetch upstream --tags --force
+          LATEST=$(git tag --list 'v*' --sort=-v:refname --merged upstream/main | head -n 1)
+          if [ -z "$LATEST" ]; then
+            echo "::warning::upstream has no v* tags - skipping tag sync"
+            exit 0
+          fi
+          # 确认该发布提交确实随本次合并进入了 main
+          git merge-base --is-ancestor "$LATEST" main
+          git remote set-url origin "https://x-access-token:${{ secrets.PAT }}@github.com/${{ github.repository }}.git"
+          git tag -f -a "$LATEST" -m "$LATEST" main
+          git push origin "refs/tags/$LATEST" --force
+          echo "Tagged merge commit $(git rev-parse --short main) as $LATEST (upstream release $(git rev-parse --short "$LATEST^{commit}"))"
