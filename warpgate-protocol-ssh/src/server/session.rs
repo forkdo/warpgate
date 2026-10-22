@@ -1774,6 +1774,7 @@ impl ServerSession {
                 },
             )
             .await;
+            self.maybe_start_command_detector(channel_id);
         }
         Ok(())
     }
