@@ -1,8 +1,12 @@
 name: Upstream Sync
 
-# 每 3 天自动合并上游 warp-tech/warpgate 的 main 分支。
-# 无冲突:直接合并推送;有冲突:调 pi-action(AI)解决后验证再推送;
-# AI 解决失败或验证失败:中止合并(merge --abort),工作流置为失败,等待人工处理。
+# 每 3 天拉取上游 warp-tech/warpgate,按 tag 依次合并:
+# 第一个 job 找出上游已发布、但 fork main 尚未包含的 v* tag(按版本升序);
+# 第二个 job 串行(max-parallel: 1)逐个 tag 合并到 main,每个合并提交打同名 tag
+# (fork 的 tag 语义 = 上游发布内容 + fork 自身修改,指向合并提交而非上游原始提交),
+# 每合一个 tag 就 cargo check 验证并依次推送 main 与该 tag。
+# 无冲突直接合并;有冲突调 pi-action(AI)解决(最多 3 轮);AI 或验证失败则
+# 回滚该 tag 的合并,工作流置为失败,等待人工处理。
 # 注意:GitHub 的 schedule 在无活动 60 天后会自动禁用本工作流,需手动重新启用。
 
 on:
@@ -22,11 +26,61 @@ env:
   UPSTREAM_BRANCH: main
 
 jobs:
+  # ---------- 第 1 步:计算待合并的上游 tag 列表 ----------
+  tags:
+    runs-on: ubuntu-latest
+    outputs:
+      list: ${{ steps.list.outputs.tags }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Fetch upstream main and tags
+        run: |
+          git remote add upstream "$UPSTREAM_REPO"
+          git fetch upstream "$UPSTREAM_BRANCH"
+          # 上游 tag 放入独立命名空间 refs/tags/upstream/v*,避免与 fork 自己的
+          # 同名 tag(fork 语义下指向合并提交)冲突;--force 保证更新到上游最新
+          git fetch upstream --force 'refs/tags/v*:refs/tags/upstream/v*'
+
+      - name: List unmerged upstream tags
+        id: list
+        run: |
+          set -euo pipefail
+          TAGS=()
+          for REF in $(git for-each-ref refs/tags/upstream --format='%(refname:short)' --sort=v:refname); do
+            COMMIT=$(git rev-parse "$REF^{commit}")
+            # 该上游发布提交已是 main 祖先 => 之前已同步过,跳过
+            if ! git merge-base --is-ancestor "$COMMIT" main; then
+              TAGS+=("${REF#upstream/}")
+            fi
+          done
+          if [ "${#TAGS[@]}" -eq 0 ]; then
+            JSON='[]'
+          else
+            JSON=$(printf '%s\n' "${TAGS[@]}" | jq -R . | jq -sc .)
+          fi
+          echo "Pending upstream tags: $JSON"
+          echo "tags=$JSON" >> "$GITHUB_OUTPUT"
+
+  # ---------- 第 2 步:串行逐 tag 合并 / 打 tag / 推送 ----------
   merge:
+    needs: tags
+    if: needs.tags.outputs.list != '[]'
     runs-on: ubuntu-latest
     # 三轮 AI 各有 2400s(40min)硬超时,极端串联 120min + fetch/merge/verify
     # 余量,故总超时须大于 90min,否则第三轮会被 job 超时截断
     timeout-minutes: 150
+    strategy:
+      max-parallel: 1 # 串行:每个 tag 依次合并,前一个推送完成后才处理下一个
+      fail-fast: true # 某个 tag 失败即停止后续 tag,避免在坏结果上叠加
+      matrix:
+        tag: ${{ fromJSON(needs.tags.outputs.list) }}
+
+    env:
+      TAG: ${{ matrix.tag }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -55,24 +109,17 @@ jobs:
         run: |
           git remote add upstream "$UPSTREAM_REPO"
           git fetch upstream "$UPSTREAM_BRANCH"
-          echo "UPSTREAM_HEAD=$(git rev-parse upstream/main)" >> "$GITHUB_ENV"
+          git fetch upstream --force 'refs/tags/v*:refs/tags/upstream/v*'
+          echo "MERGING=$(git rev-parse --short "upstream/$TAG^{commit}")" >> "$GITHUB_ENV"
 
-      - name: Check for changes
-        id: changes
-        run: |
-          AHEAD=$(git rev-list --count main..upstream/main)
-          echo "count=$AHEAD" >> "$GITHUB_OUTPUT"
-          echo "Upstream is $AHEAD commit(s) ahead"
-
-      - name: Merge upstream (fast-forward or clean merge)
+      - name: Merge upstream tag (fast-forward or clean merge)
         id: merge
-        if: steps.changes.outputs.count != '0'
         run: |
           set -euo pipefail
           # 记录合并前的本地 HEAD,失败时用于回退
           echo "BASE_HEAD=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
-          if git merge upstream/main --no-edit; then
+          if git merge "upstream/$TAG" -m "chore: merge upstream/$TAG" --no-edit; then
             echo "merged=true" >> "$GITHUB_OUTPUT"
             echo "conflicts=false" >> "$GITHUB_OUTPUT"
           elif git ls-files --unmerged | grep -q .; then
@@ -105,15 +152,15 @@ jobs:
           prompt: |
             You are resolving git merge conflicts in a Rust SSH gateway project.
 
-            The repo is a fork of warp-tech/warpgate. `git merge upstream/main` was run and
-            stopped with conflicts. Your job:
+            The repo is a fork of warp-tech/warpgate. `git merge upstream/$TAG` was run
+            (merging upstream release tag $TAG) and stopped with conflicts. Your job:
 
             1. Run `git diff --name-only --diff-filter=U` to list conflicted files.
             2. For each file, read the conflict markers (<<<<<<< HEAD / ======= / >>>>>>>)
                and resolve them by combining BOTH sides' intent:
                - HEAD (ours) contains this fork's own changes (e.g. the SSH inactivity_timeout=0
                  fix that disables the inactivity timeout when it is set to 0).
-               - upstream/main (theirs) contains the upstream feature changes.
+               - upstream/$TAG (theirs) contains the upstream feature changes.
                The correct resolution usually keeps the fork's semantics while adopting the
                upstream structure. Never delete either side's feature. If truly unsure how to
                combine them, keep the upstream side (theirs).
@@ -125,7 +172,7 @@ jobs:
                not occur in the real workspace build. Never edit Cargo.toml [features]
                or dependency lists to silence it.
             4. After ALL conflicts are resolved and cargo check passes, run:
-               `git add -A && git commit -m "chore: merge upstream/main"`
+               `git add -A && git commit -m "chore: merge upstream/$TAG"`
                (This exact format is required: a commit-msg hook rejects messages that do
                not start with a conventional-commit type like "chore:".)
                Do NOT add any Co-Authored-By or Generated-with lines to the commit message.
@@ -154,7 +201,7 @@ jobs:
           # (旧的 conflict-base 舞步会让 git branch -D 因"删除当前分支"失败,
           # 后续 AI 提交全部落在临时分支上,push origin main 推空。)
           git reset -q --hard "$BASE_HEAD"
-          git merge upstream/main --no-edit || true
+          git merge "upstream/$TAG" -m "chore: merge upstream/$TAG" --no-edit || true
           echo "::warning::Round 1 failed, retrying with a fresh model pick"
 
       - name: Round 2 - Resolve conflicts with AI
@@ -170,15 +217,15 @@ jobs:
           prompt: |
             You are resolving git merge conflicts in a Rust SSH gateway project.
 
-            The repo is a fork of warp-tech/warpgate. `git merge upstream/main` was run and
-            stopped with conflicts. Your job:
+            The repo is a fork of warp-tech/warpgate. `git merge upstream/$TAG` was run
+            (merging upstream release tag $TAG) and stopped with conflicts. Your job:
 
             1. Run `git diff --name-only --diff-filter=U` to list conflicted files.
             2. For each file, read the conflict markers (<<<<<<< HEAD / ======= / >>>>>>>)
                and resolve them by combining BOTH sides' intent:
                - HEAD (ours) contains this fork's own changes (e.g. the SSH inactivity_timeout=0
                  fix that disables the inactivity timeout when it is set to 0).
-               - upstream/main (theirs) contains the upstream feature changes.
+               - upstream/$TAG (theirs) contains the upstream feature changes.
                The correct resolution usually keeps the fork's semantics while adopting the
                upstream structure. Never delete either side's feature. If truly unsure how to
                combine them, keep the upstream side (theirs).
@@ -190,7 +237,7 @@ jobs:
                not occur in the real workspace build. Never edit Cargo.toml [features]
                or dependency lists to silence it.
             4. After ALL conflicts are resolved and cargo check passes, run:
-               `git add -A && git commit -m "chore: merge upstream/main"`
+               `git add -A && git commit -m "chore: merge upstream/$TAG"`
                (This exact format is required: a commit-msg hook rejects messages that do
                not start with a conventional-commit type like "chore:".)
                Do NOT add any Co-Authored-By or Generated-with lines to the commit message.
@@ -216,7 +263,7 @@ jobs:
         run: |
           set -euo pipefail
           git reset -q --hard "$BASE_HEAD"
-          git merge upstream/main --no-edit || true
+          git merge "upstream/$TAG" -m "chore: merge upstream/$TAG" --no-edit || true
           echo "::warning::Round 2 failed, one more retry"
 
       - name: Round 3 - Resolve conflicts with AI
@@ -232,15 +279,15 @@ jobs:
           prompt: |
             You are resolving git merge conflicts in a Rust SSH gateway project.
 
-            The repo is a fork of warp-tech/warpgate. `git merge upstream/main` was run and
-            stopped with conflicts. Your job:
+            The repo is a fork of warp-tech/warpgate. `git merge upstream/$TAG` was run
+            (merging upstream release tag $TAG) and stopped with conflicts. Your job:
 
             1. Run `git diff --name-only --diff-filter=U` to list conflicted files.
             2. For each file, read the conflict markers (<<<<<<< HEAD / ======= / >>>>>>>)
                and resolve them by combining BOTH sides' intent:
                - HEAD (ours) contains this fork's own changes (e.g. the SSH inactivity_timeout=0
                  fix that disables the inactivity timeout when it is set to 0).
-               - upstream/main (theirs) contains the upstream feature changes.
+               - upstream/$TAG (theirs) contains the upstream feature changes.
                The correct resolution usually keeps the fork's semantics while adopting the
                upstream structure. Never delete either side's feature. If truly unsure how to
                combine them, keep the upstream side (theirs).
@@ -252,7 +299,7 @@ jobs:
                not occur in the real workspace build. Never edit Cargo.toml [features]
                or dependency lists to silence it.
             4. After ALL conflicts are resolved and cargo check passes, run:
-               `git add -A && git commit -m "chore: merge upstream/main"`
+               `git add -A && git commit -m "chore: merge upstream/$TAG"`
                (This exact format is required: a commit-msg hook rejects messages that do
                not start with a conventional-commit type like "chore:".)
                Do NOT add any Co-Authored-By or Generated-with lines to the commit message.
@@ -290,7 +337,7 @@ jobs:
         run: |
           set -euo pipefail
           # 成功合并的提交必须落在 main 上:冲突解决轮次可能把 HEAD 留在
-          # 临时分支(原 conflict-base 舞步会因“删除当前分支”失败而静默
+          # 临时分支(原 conflict-base 舞步会因"删除当前分支"失败而静默
           # 留在临时分支),此时 push origin main 会推空或非快进失败。
           git rev-parse --verify -q main > /dev/null
           if [ "$(git rev-parse HEAD)" != "$(git rev-parse main)" ]; then
@@ -302,24 +349,17 @@ jobs:
           # 此处直接用 PAT 重写 origin URL 推送即可。
           git remote set-url origin "https://x-access-token:${{ secrets.PAT }}@github.com/${{ github.repository }}.git"
           git push origin main
-          echo "Pushed main $(git rev-parse --short HEAD) (merged upstream $(git rev-parse --short "$UPSTREAM_HEAD"))"
+          echo "Pushed main $(git rev-parse --short HEAD) (merged upstream tag $TAG at $(git rev-parse --short "$MERGING"))"
 
-      - name: Tag merged main with upstream release
+      - name: Tag merged main with this upstream release
         if: steps.merge.outputs.merged == 'true' || steps.merge.outputs.conflicts == 'true'
         run: |
           set -euo pipefail
-          # 把上游最新的 v* 官方 tag 重打到本次合并结果(main HEAD)上:
-          # fork 的 tag 语义 = 上游发布内容 + fork 自身修改,即指向合并提交,
-          # 而非上游原始发布提交。CI 无 GPG 私钥,故为附注标签(无签名)。
-          git fetch upstream --tags --force
-          LATEST=$(git tag --list 'v*' --sort=-v:refname --merged upstream/main | head -n 1)
-          if [ -z "$LATEST" ]; then
-            echo "::warning::upstream has no v* tags - skipping tag sync"
-            exit 0
-          fi
-          # 确认该发布提交确实随本次合并进入了 main
-          git merge-base --is-ancestor "$LATEST" main
+          # fork 的 tag 语义 = 上游发布内容 + fork 自身修改,即 $TAG 指向本次
+          # 合并提交,而非上游原始发布提交。CI 无 GPG 私钥,故为附注标签(无签名)。
+          # 先确认该上游发布提交确实随本次合并进入了 main。
+          git merge-base --is-ancestor "upstream/$TAG" main
+          git tag -a "$TAG" -m "$TAG" main
           git remote set-url origin "https://x-access-token:${{ secrets.PAT }}@github.com/${{ github.repository }}.git"
-          git tag -f -a "$LATEST" -m "$LATEST" main
-          git push origin "refs/tags/$LATEST" --force
-          echo "Tagged merge commit $(git rev-parse --short main) as $LATEST (upstream release $(git rev-parse --short "$LATEST^{commit}"))"
+          git push origin "refs/tags/$TAG"
+          echo "Tagged merge commit $(git rev-parse --short main) as $TAG (upstream release $MERGING)"
