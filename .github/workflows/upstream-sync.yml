@@ -1,7 +1,9 @@
 name: Upstream Sync
 
 # 每 3 天拉取上游 warp-tech/warpgate,按 tag 依次合并:
-# 第一个 job 找出上游已发布、但 fork main 尚未包含的 v* tag(按版本升序);
+# 第一个 job 以 fork 自己已打的最后一个 v* tag 为基准(如 v1.1.0),
+# 找出上游发布 tag 中版本号严格大于基准的(如 v1.2.0、v1.3.0),按版本升序排列;
+# 旧的(如 v0.9.0、v1.0.0)与基准同版本的均跳过;
 # 第二个 job 串行(max-parallel: 1)逐个 tag 合并到 main,每个合并提交打同名 tag
 # (fork 的 tag 语义 = 上游发布内容 + fork 自身修改,指向合并提交而非上游原始提交),
 # 每合一个 tag 就 cargo check 验证并依次推送 main 与该 tag。
@@ -49,12 +51,19 @@ jobs:
         id: list
         run: |
           set -euo pipefail
+          # 基准 = fork 自己已打的最后一个 v* tag(如 v1.1.0)。
+          # fork 的 tag 在 refs/tags/v* 命名空间,上游的在 refs/tags/upstream/v*,
+          # glob 'v*' 不会匹配到 upstream/ 前缀的引用。
+          BASE=$(git for-each-ref 'refs/tags/v*' --sort=-v:refname --format='%(refname:short)' | head -n1)
+          echo "Base fork tag: ${BASE:-<none>}"
           TAGS=()
           for REF in $(git for-each-ref refs/tags/upstream --format='%(refname:short)' --sort=v:refname); do
-            COMMIT=$(git rev-parse "$REF^{commit}")
-            # 该上游发布提交已是 main 祖先 => 之前已同步过,跳过
-            if ! git merge-base --is-ancestor "$COMMIT" main; then
-              TAGS+=("${REF#upstream/}")
+            VER="${REF#upstream/}"
+            # 只保留版本号严格大于基准的上游 tag(如基准 v1.1.0 时只取 v1.2.0、v1.3.0),
+            # 旧的 v0.9.0、v1.0.0 以及与基准同版本的都跳过
+            if [ -z "$BASE" ] || \
+               { [ "$(printf '%s\n%s\n' "$BASE" "$VER" | sort -V | tail -n1)" = "$VER" ] && [ "$VER" != "$BASE" ]; }; then
+              TAGS+=("$VER")
             fi
           done
           if [ "${#TAGS[@]}" -eq 0 ]; then
