@@ -124,6 +124,10 @@ jobs:
 
     env:
       TAG: ${{ matrix.tag }}
+      # pi-action(v1.9.0~v1.10.0)的 npm ci 会执行 prepare 脚本(prek install),
+      # 该脚本在 action 自身目录(非 git 仓库)运行必然失败。此脚本仅给
+      # pi-action 仓库装开发钩子,与运行时无关,故全局跳过 npm 生命周期脚本
+      npm_config_ignore_scripts: "true"
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
