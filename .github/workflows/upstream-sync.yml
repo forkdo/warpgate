@@ -72,10 +72,13 @@ jobs:
       - name: Fetch upstream main and tags
         run: |
           git remote add upstream "$UPSTREAM_REPO"
-          git fetch upstream "$UPSTREAM_BRANCH"
+          # --no-tags 禁用 fetch 的 tag auto-follow:否则上游指向 main 历史的
+          # tag(v0.30.1 等)会被自动写进 refs/tags/v*,污染 fork 的 tag 命名
+          # 空间,把 BASE 抬到上游最新 tag,待同步列表永远为空
+          git fetch upstream --no-tags "$UPSTREAM_BRANCH"
           # 上游 tag 放入独立命名空间 refs/tags/upstream/v*,避免与 fork 自己的
           # 同名 tag(fork 语义下指向合并提交)冲突;--force 保证更新到上游最新
-          git fetch upstream --force 'refs/tags/v*:refs/tags/upstream/v*'
+          git fetch upstream --no-tags --force 'refs/tags/v*:refs/tags/upstream/v*'
 
       - name: List unmerged upstream tags
         id: list
@@ -148,8 +151,8 @@ jobs:
       - name: Fetch upstream
         run: |
           git remote add upstream "$UPSTREAM_REPO"
-          git fetch upstream "$UPSTREAM_BRANCH"
-          git fetch upstream --force 'refs/tags/v*:refs/tags/upstream/v*'
+          git fetch upstream --no-tags "$UPSTREAM_BRANCH"
+          git fetch upstream --no-tags --force 'refs/tags/v*:refs/tags/upstream/v*'
           echo "MERGING=$(git rev-parse --short "upstream/$TAG^{commit}")" >> "$GITHUB_ENV"
 
       - name: Merge upstream tag (fast-forward or clean merge)
