@@ -124,6 +124,9 @@ jobs:
 
     env:
       TAG: ${{ matrix.tag }}
+      # pi 经环境变量 OPENROUTER_API_KEY 读取凭证(README 标准方式)。composite
+      # action 内部步骤不继承 caller 的 step 级 env,必须放 job 级才能到达 pi 进程
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       # pi-action(v1.9.0~v1.10.0)的 npm ci 会执行 prepare 脚本(prek install),
       # 该脚本在 action 自身目录(非 git 仓库)运行必然失败。此脚本仅给
       # pi-action 仓库装开发钩子,与运行时无关,故全局跳过 npm 生命周期脚本
@@ -192,19 +195,11 @@ jobs:
         uses: cv/pi-action@v1
         with:
           github_token: ${{ secrets.PAT }}
-          # key 必须经 input 传入:composite action 内部读不到 step 级 env
-          # (此前写在 env 里,pi 调 OpenRouter 401 Missing Authentication header)
-          api_key: ${{ secrets.OPENROUTER_API_KEY }}
-          # 三轮 AI 在同一 run 内,默认 artifact 名(run_id+attempt)相同会 409
           session_artifact_name: pi-session-${{ matrix.tag }}-r1
           output_mode: output
           timeout: "2400"
           provider: openrouter
           model: openrouter/free
-          # 走自定义 provider 注册:显式 baseUrl + key,绕开 pi 内建 openrouter
-          # provider 不应用 setRuntimeApiKey 的认证问题(401 Missing Auth header)
-          provider_base_url: https://openrouter.ai/api/v1
-          provider_api_key: ${{ secrets.OPENROUTER_API_KEY }}
           prompt: |
             You are resolving git merge conflicts in a Rust SSH gateway project.
 
@@ -266,16 +261,11 @@ jobs:
           github_token: ${{ secrets.PAT }}
           # key 必须经 input 传入:composite action 内部读不到 step 级 env
           # (此前写在 env 里,pi 调 OpenRouter 401 Missing Authentication header)
-          api_key: ${{ secrets.OPENROUTER_API_KEY }}
           session_artifact_name: pi-session-${{ matrix.tag }}-r2
           output_mode: output
           timeout: "2400"
           provider: openrouter
           model: openrouter/free
-          # 走自定义 provider 注册:显式 baseUrl + key,绕开 pi 内建 openrouter
-          # provider 不应用 setRuntimeApiKey 的认证问题(401 Missing Auth header)
-          provider_base_url: https://openrouter.ai/api/v1
-          provider_api_key: ${{ secrets.OPENROUTER_API_KEY }}
           prompt: |
             You are resolving git merge conflicts in a Rust SSH gateway project.
 
@@ -334,16 +324,11 @@ jobs:
           github_token: ${{ secrets.PAT }}
           # key 必须经 input 传入:composite action 内部读不到 step 级 env
           # (此前写在 env 里,pi 调 OpenRouter 401 Missing Authentication header)
-          api_key: ${{ secrets.OPENROUTER_API_KEY }}
           session_artifact_name: pi-session-${{ matrix.tag }}-r3
           output_mode: output
           timeout: "2400"
           provider: openrouter
           model: openrouter/free
-          # 走自定义 provider 注册:显式 baseUrl + key,绕开 pi 内建 openrouter
-          # provider 不应用 setRuntimeApiKey 的认证问题(401 Missing Auth header)
-          provider_base_url: https://openrouter.ai/api/v1
-          provider_api_key: ${{ secrets.OPENROUTER_API_KEY }}
           prompt: |
             You are resolving git merge conflicts in a Rust SSH gateway project.
 
