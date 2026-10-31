@@ -184,6 +184,16 @@ jobs:
 
       # ---------- 有冲突:交给 AI 解决 ----------
 
+      # 诊断:确认 secret 非空且有效(401=无效,200=有效,长度 0=secret 未配置)
+      - name: Debug OpenRouter API key
+        if: steps.merge.outputs.conflicts == 'true'
+        run: |
+          set -euo pipefail
+          echo "OPENROUTER_API_KEY length: ${#OPENROUTER_API_KEY}"
+          curl -s -o /dev/null -w 'key check api: %{http_code}\n' \
+            https://openrouter.ai/api/v1/key -H "Authorization: Bearer $OPENROUTER_API_KEY" || true
+          curl -s https://openrouter.ai/api/v1/key -H "Authorization: Bearer $OPENROUTER_API_KEY" | head -c 300 || true
+
       # openrouter/free 是 OpenRouter 的路由入口,每轮从当前可用的 free 模型中
       # 选取,不依赖单一模型的可用性。路由可能随机到较弱的模型,故最多重试 3 轮:
       # 每轮结束后由 "Round N check" 验证;失败则回滚到冲突状态重试。
