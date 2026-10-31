@@ -201,6 +201,10 @@ jobs:
           timeout: "2400"
           provider: openrouter
           model: openrouter/free
+          # 走自定义 provider 注册:显式 baseUrl + key,绕开 pi 内建 openrouter
+          # provider 不应用 setRuntimeApiKey 的认证问题(401 Missing Auth header)
+          provider_base_url: https://openrouter.ai/api/v1
+          provider_api_key: ${{ secrets.OPENROUTER_API_KEY }}
           prompt: |
             You are resolving git merge conflicts in a Rust SSH gateway project.
 
@@ -268,6 +272,10 @@ jobs:
           timeout: "2400"
           provider: openrouter
           model: openrouter/free
+          # 走自定义 provider 注册:显式 baseUrl + key,绕开 pi 内建 openrouter
+          # provider 不应用 setRuntimeApiKey 的认证问题(401 Missing Auth header)
+          provider_base_url: https://openrouter.ai/api/v1
+          provider_api_key: ${{ secrets.OPENROUTER_API_KEY }}
           prompt: |
             You are resolving git merge conflicts in a Rust SSH gateway project.
 
@@ -332,6 +340,10 @@ jobs:
           timeout: "2400"
           provider: openrouter
           model: openrouter/free
+          # 走自定义 provider 注册:显式 baseUrl + key,绕开 pi 内建 openrouter
+          # provider 不应用 setRuntimeApiKey 的认证问题(401 Missing Auth header)
+          provider_base_url: https://openrouter.ai/api/v1
+          provider_api_key: ${{ secrets.OPENROUTER_API_KEY }}
           prompt: |
             You are resolving git merge conflicts in a Rust SSH gateway project.
 
