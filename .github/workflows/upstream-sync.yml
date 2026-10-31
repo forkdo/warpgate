@@ -192,6 +192,8 @@ jobs:
         uses: cv/pi-action@v1
         with:
           github_token: ${{ secrets.PAT }}
+          # 三轮 AI 在同一 run 内,默认 artifact 名(run_id+attempt)相同会 409
+          session_artifact_name: pi-session-${{ matrix.tag }}-r1
           output_mode: output
           timeout: "2400"
           provider: openrouter
@@ -257,6 +259,7 @@ jobs:
         uses: cv/pi-action@v1
         with:
           github_token: ${{ secrets.PAT }}
+          session_artifact_name: pi-session-${{ matrix.tag }}-r2
           output_mode: output
           timeout: "2400"
           provider: openrouter
@@ -319,6 +322,7 @@ jobs:
         uses: cv/pi-action@v1
         with:
           github_token: ${{ secrets.PAT }}
+          session_artifact_name: pi-session-${{ matrix.tag }}-r3
           output_mode: output
           timeout: "2400"
           provider: openrouter
