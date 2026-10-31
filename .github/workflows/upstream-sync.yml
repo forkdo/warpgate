@@ -200,6 +200,12 @@ jobs:
           timeout: "2400"
           provider: openrouter
           model: openrouter/free
+          # 走自定义 provider 注册并显式加 Authorization 头:pi 内建 openrouter
+          # provider 定义缺 auth 声明(不构造 Authorization),且 pi-action 的
+          # provider_auth_header 默认 false,两者都会导致 401 Missing Auth header
+          provider_base_url: https://openrouter.ai/api/v1
+          provider_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+          provider_auth_header: "true"
           prompt: |
             You are resolving git merge conflicts in a Rust SSH gateway project.
 
@@ -266,6 +272,12 @@ jobs:
           timeout: "2400"
           provider: openrouter
           model: openrouter/free
+          # 走自定义 provider 注册并显式加 Authorization 头:pi 内建 openrouter
+          # provider 定义缺 auth 声明(不构造 Authorization),且 pi-action 的
+          # provider_auth_header 默认 false,两者都会导致 401 Missing Auth header
+          provider_base_url: https://openrouter.ai/api/v1
+          provider_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+          provider_auth_header: "true"
           prompt: |
             You are resolving git merge conflicts in a Rust SSH gateway project.
 
@@ -329,6 +341,12 @@ jobs:
           timeout: "2400"
           provider: openrouter
           model: openrouter/free
+          # 走自定义 provider 注册并显式加 Authorization 头:pi 内建 openrouter
+          # provider 定义缺 auth 声明(不构造 Authorization),且 pi-action 的
+          # provider_auth_header 默认 false,两者都会导致 401 Missing Auth header
+          provider_base_url: https://openrouter.ai/api/v1
+          provider_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+          provider_auth_header: "true"
           prompt: |
             You are resolving git merge conflicts in a Rust SSH gateway project.
 
