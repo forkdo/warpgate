@@ -4146,9 +4146,9 @@ checksum = "2e126dda6f34391ab7b444f9922055facc83c07a910da3eb16f1e4d9c45dc777"
 
 [[package]]
 name = "libz-sys"
-version = "1.1.29"
+version = "1.1.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85bc9657773828b90eeb625adff10eeac83cc21bbfd8e23a03eaa8a33c9e28d9"
+checksum = "ff20308ecabd635a2dc1dd5834a86c462cca20efba1d5d3ddab1f8aea3455cb2"
 dependencies = [
  "cc",
  "libc",
@@ -8905,7 +8905,7 @@ dependencies = [
 
 [[package]]
 name = "warpgate"
-version = "0.30.2"
+version = "0.30.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8957,7 +8957,7 @@ dependencies = [
 
 [[package]]
 name = "warpgate-admin"
-version = "0.30.2"
+version = "0.30.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -9026,7 +9026,7 @@ dependencies = [
 
 [[package]]
 name = "warpgate-ca"
-version = "0.30.2"
+version = "0.30.3"
 dependencies = [
  "aws-lc-rs",
  "const-oid 0.9.6",
@@ -9045,7 +9045,7 @@ dependencies = [
 
 [[package]]
 name = "warpgate-common"
-version = "0.30.2"
+version = "0.30.3"
 dependencies = [
  "aes-gcm 0.11.0",
  "anyhow",
@@ -9113,7 +9113,7 @@ dependencies = [
 
 [[package]]
 name = "warpgate-common-http"
-version = "0.30.2"
+version = "0.30.3"
 dependencies = [
  "anyhow",
  "html-escape",
@@ -9137,7 +9137,7 @@ dependencies = [
 
 [[package]]
 name = "warpgate-core"
-version = "0.30.2"
+version = "0.30.3"
 dependencies = [
  "anyhow",
  "argon2 0.5.3",
@@ -9191,7 +9191,7 @@ dependencies = [
 
 [[package]]
 name = "warpgate-database-protocols"
-version = "0.30.2"
+version = "0.30.3"
 dependencies = [
  "bitflags 2.13.1",
  "bytes",
@@ -9204,7 +9204,7 @@ dependencies = [
 
 [[package]]
 name = "warpgate-db-entities"
-version = "0.30.2"
+version = "0.30.3"
 dependencies = [
  "bytes",
  "data-encoding",
@@ -9227,7 +9227,7 @@ dependencies = [
 
 [[package]]
 name = "warpgate-db-migrations"
-version = "0.30.2"
+version = "0.30.3"
 dependencies = [
  "data-encoding",
  "regex",
@@ -9272,7 +9272,7 @@ dependencies = [
 
 [[package]]
 name = "warpgate-ldap"
-version = "0.30.2"
+version = "0.30.3"
 dependencies = [
  "anyhow",
  "ldap3",
@@ -9288,7 +9288,7 @@ dependencies = [
 
 [[package]]
 name = "warpgate-protocol-http"
-version = "0.30.2"
+version = "0.30.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -9335,7 +9335,7 @@ dependencies = [
 
 [[package]]
 name = "warpgate-protocol-kubernetes"
-version = "0.30.2"
+version = "0.30.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -9379,7 +9379,7 @@ dependencies = [
 
 [[package]]
 name = "warpgate-protocol-mysql"
-version = "0.30.2"
+version = "0.30.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -9409,7 +9409,7 @@ dependencies = [
 
 [[package]]
 name = "warpgate-protocol-postgres"
-version = "0.30.2"
+version = "0.30.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -9469,7 +9469,7 @@ dependencies = [
 
 [[package]]
 name = "warpgate-protocol-ssh"
-version = "0.30.2"
+version = "0.30.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -9535,7 +9535,7 @@ dependencies = [
 
 [[package]]
 name = "warpgate-secrets-vault"
-version = "0.30.2"
+version = "0.30.3"
 dependencies = [
  "async-trait",
  "reqwest 0.12.28",
@@ -9552,7 +9552,7 @@ dependencies = [
 
 [[package]]
 name = "warpgate-sso"
-version = "0.30.2"
+version = "0.30.3"
 dependencies = [
  "bytes",
  "data-encoding",
@@ -9574,7 +9574,7 @@ dependencies = [
 
 [[package]]
 name = "warpgate-tls"
-version = "0.30.2"
+version = "0.30.3"
 dependencies = [
  "bytes",
  "poem",
@@ -9596,7 +9596,7 @@ dependencies = [
 
 [[package]]
 name = "warpgate-web"
-version = "0.30.2"
+version = "0.30.3"
 dependencies = [
  "rust-embed",
  "serde",
