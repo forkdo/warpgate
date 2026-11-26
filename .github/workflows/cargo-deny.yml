@@ -13,7 +13,7 @@ jobs:
     name: cargo-deny
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@v7.0.1
 
       # Cargo.toml 首行使用 nightly-only 的 cargo-features = ["profile-rustflags"],
       # stable cargo 连 cargo metadata 都解析不了,必须按 rust-toolchain.toml 装 nightly

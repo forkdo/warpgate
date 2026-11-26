@@ -1,3 +1,4 @@
+use warpgate_common::UserId;
 use sea_orm::entity::prelude::*;
 use sea_orm::sea_query::{Expr, IntoCondition};
 use sea_orm::{DatabaseTransaction, QuerySelect, TransactionTrait};
@@ -16,7 +17,7 @@ pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: UserSessionId,
     pub username: Option<String>,
-    pub user_id: Option<Uuid>,
+    pub user_id: Option<UserId>,
     pub remote_address: String,
     pub started: OffsetDateTime,
     pub ended: Option<OffsetDateTime>,
@@ -56,7 +57,7 @@ impl ActiveModelBehavior for ActiveModel {}
 pub struct EndedTargetSessions {
     id: UserSessionId,
     children: Vec<TargetSession::Model>,
-    user_id: Option<Uuid>,
+    user_id: Option<UserId>,
     username: Option<String>,
 }
 
@@ -94,7 +95,7 @@ pub async fn lock_for_update(
     id: UserSessionId,
 ) -> Result<Option<Model>, WarpgateError> {
     Entity::update_many()
-        .col_expr(Column::Started, Expr::col(Column::Started).into())
+        .col_expr(Column::Started, Expr::col(Column::Started))
         .filter(Column::Id.eq(id))
         .exec(transaction)
         .await?;
@@ -168,10 +169,11 @@ pub async fn revoke(db: &DatabaseConnection, id: UserSessionId) -> Result<(), Wa
     Ok(())
 }
 
+/// Returns the ids it ended.
 pub async fn revoke_open_matching(
     db: &DatabaseConnection,
     filter: impl IntoCondition,
-) -> Result<(), WarpgateError> {
+) -> Result<Vec<UserSessionId>, WarpgateError> {
     let open: Vec<Uuid> = Entity::find()
         .filter(Column::Ended.is_null())
         .filter(filter)
@@ -180,9 +182,10 @@ pub async fn revoke_open_matching(
         .into_tuple()
         .all(db)
         .await?;
-    for id in open {
+    let open: Vec<UserSessionId> = open.into_iter().map(UserSessionId).collect();
+    for id in &open {
         // one at a time to emit audit events
-        revoke(db, UserSessionId(id)).await?;
+        revoke(db, *id).await?;
     }
-    Ok(())
+    Ok(open)
 }

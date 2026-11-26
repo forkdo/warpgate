@@ -21,8 +21,8 @@ use poem::http::{HeaderMap, HeaderName, HeaderValue, header};
 use poem::{Body, Request};
 use warpgate_common::WarpgateError;
 pub use warpgate_common::http_headers::{
-    X_WARPGATE_CLUSTER_CLIENT_IP, X_WARPGATE_CLUSTER_IDENTITY, X_WARPGATE_CLUSTER_NODE,
-    X_WARPGATE_TOKEN,
+    X_WARPGATE_CLUSTER_CLIENT_IP, X_WARPGATE_CLUSTER_IDENTITY, X_WARPGATE_CLUSTER_IDENTITY_TOKEN,
+    X_WARPGATE_CLUSTER_NODE, X_WARPGATE_TOKEN,
 };
 
 const BODY_READ_TIMEOUT: Duration = Duration::from_secs(30);

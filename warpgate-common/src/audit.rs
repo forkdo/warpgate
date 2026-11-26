@@ -4,6 +4,7 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::helpers::logging::format_related_ids;
+use crate::{RoleId, TargetId, UserId};
 
 #[derive(Clone)]
 pub enum CredentialChangedVia {
@@ -25,9 +26,9 @@ impl Display for CredentialChangedVia {
 #[derive(Clone)]
 pub struct KubernetesAuditSubject {
     pub session_id: Uuid,
-    pub user_id: Uuid,
+    pub user_id: UserId,
     pub username: String,
-    pub target_id: Uuid,
+    pub target_id: TargetId,
     pub target_name: String,
 }
 
@@ -37,80 +38,80 @@ pub enum AuditEvent {
         credential_type: String,
         credential_name: Option<String>,
         via: CredentialChangedVia,
-        user_id: Uuid,
+        user_id: UserId,
         username: String,
-        actor_user_id: Uuid,
+        actor_user_id: UserId,
     },
     CredentialDeleted {
         credential_type: String,
         credential_name: Option<String>,
         via: CredentialChangedVia,
-        user_id: Uuid,
+        user_id: UserId,
         username: String,
-        actor_user_id: Uuid,
+        actor_user_id: UserId,
     },
     UserCreated {
-        user_id: Uuid,
+        user_id: UserId,
         username: String,
-        actor_user_id: Uuid,
+        actor_user_id: UserId,
     },
     UserDeleted {
-        user_id: Uuid,
+        user_id: UserId,
         username: String,
-        actor_user_id: Uuid,
+        actor_user_id: UserId,
     },
     TargetSessionStarted {
         session_id: Uuid,
         target_name: String,
-        target_id: Uuid,
-        user_id: Uuid,
+        target_id: TargetId,
+        user_id: UserId,
         username: String,
     },
     TargetSessionEnded {
         session_id: Uuid,
         target_name: String,
-        target_id: Uuid,
-        user_id: Uuid,
+        target_id: TargetId,
+        user_id: UserId,
         username: String,
     },
     AccessRoleGranted {
-        grantee_id: Uuid,
+        grantee_id: UserId,
         grantee_username: String,
-        role_id: Uuid,
+        role_id: RoleId,
         role_name: String,
-        actor_user_id: Uuid,
+        actor_user_id: UserId,
         related_access_roles: String,
     },
     AccessRoleRevoked {
-        grantee_id: Uuid,
+        grantee_id: UserId,
         grantee_username: String,
-        role_id: Uuid,
+        role_id: RoleId,
         role_name: String,
-        actor_user_id: Uuid,
+        actor_user_id: UserId,
         related_access_roles: String,
     },
     AdminRoleGranted {
-        grantee_id: Uuid,
+        grantee_id: UserId,
         grantee_username: String,
         admin_role_id: Uuid,
         admin_role_name: String,
-        actor_user_id: Uuid,
+        actor_user_id: UserId,
         related_admin_roles: String,
     },
     AdminRoleRevoked {
-        grantee_id: Uuid,
+        grantee_id: UserId,
         grantee_username: String,
         admin_role_id: Uuid,
         admin_role_name: String,
-        actor_user_id: Uuid,
+        actor_user_id: UserId,
         related_admin_roles: String,
     },
     // currently used for RDP logon PDU
     TargetLogon {
         session_id: Uuid,
         target_name: String,
-        target_id: Uuid,
-        user_id: Uuid,
+        target_id: TargetId,
+        user_id: UserId,
         username: String,
         /// for RPD, DOMAIN\user
         target_account: Option<String>,
@@ -118,17 +119,17 @@ pub enum AuditEvent {
     },
     TicketCreated {
         ticket_id: Uuid,
-        user_id: Uuid,
+        user_id: UserId,
         username: String,
         target: String,
-        actor_user_id: Uuid,
+        actor_user_id: UserId,
     },
     TicketDeleted {
         ticket_id: Uuid,
-        user_id: Uuid,
+        user_id: UserId,
         username: String,
         target: String,
-        actor_user_id: Uuid,
+        actor_user_id: UserId,
     },
     SecretResolved {
         backend: String,
@@ -234,6 +235,41 @@ pub enum AuditEvent {
         /// `None` if the cluster sent no response. The write may still have
         /// been applied.
         response_status: Option<u16>,
+    },
+    /// A provider synced from its source. A sync that applies nothing and
+    /// repeats the previous outcome is not logged.
+    ProviderSynced {
+        sync_id: Uuid,
+        provider: String,
+        trigger: String,
+        status: String,
+        source: String,
+        revision: Option<String>,
+        /// The admin who requested the sync
+        actor_user_id: Option<UserId>,
+    },
+    /// A resource that a provider sync created, changed or deleted
+    ManagedResourceChanged {
+        sync_id: Uuid,
+        provider: String,
+        /// `Create`, `Update`, `Adopt` or `Delete`
+        action: String,
+        kind: String,
+        id: Uuid,
+        name: String,
+        /// The changed fields as a JSON array, without credential values
+        fields: Option<String>,
+        actor_user_id: Option<UserId>,
+    },
+    /// An admin made a provider's resource editable by hand again
+    ProviderResourceReleased {
+        provider: String,
+        kind: String,
+        id: Uuid,
+        actor_user_id: UserId,
+    },
+    UnmanagedResourcesExported {
+        actor_user_id: UserId,
     },
 }
 
@@ -735,6 +771,78 @@ impl AuditEvent {
                     reason = %reason,
                     response_status = response_status.map(tracing::field::display),
                     "Kubernetes request with an unparseable body"
+                );
+            }
+            Self::ProviderSynced {
+                sync_id,
+                provider,
+                trigger,
+                status,
+                source,
+                revision,
+                actor_user_id,
+            } => {
+                let related_users = actor_user_id.map(|id| format_related_ids(&[id]));
+                info!(
+                    target: "audit",
+                    _type = "ProviderSynced1",
+                    sync_id = %sync_id,
+                    provider = %provider,
+                    trigger = %trigger,
+                    status = %status,
+                    source = %source,
+                    revision = revision.as_deref(),
+                    related_users = related_users.as_deref(),
+                    "Provider synced"
+                );
+            }
+            Self::ManagedResourceChanged {
+                sync_id,
+                provider,
+                action,
+                kind,
+                id,
+                name,
+                fields,
+                actor_user_id,
+            } => {
+                let related_users = actor_user_id.map(|id| format_related_ids(&[id]));
+                info!(
+                    target: "audit",
+                    _type = "ProviderResourceChanged1",
+                    sync_id = %sync_id,
+                    provider = %provider,
+                    action = %action,
+                    kind = %kind,
+                    id = %id,
+                    name = %name,
+                    fields = fields.as_deref(),
+                    related_users = related_users.as_deref(),
+                    "Provider sync changed a resource"
+                );
+            }
+            Self::ProviderResourceReleased {
+                provider,
+                kind,
+                id,
+                actor_user_id,
+            } => {
+                info!(
+                    target: "audit",
+                    _type = "ProviderResourceReleased1",
+                    provider = %provider,
+                    kind = %kind,
+                    id = %id,
+                    related_users = %format_related_ids(&[*actor_user_id]),
+                    "Managed resource manually released from its provider"
+                );
+            }
+            Self::UnmanagedResourcesExported { actor_user_id } => {
+                info!(
+                    target: "audit",
+                    _type = "UnmanagedResourcesExported1",
+                    related_users = %format_related_ids(&[*actor_user_id]),
+                    "Unmanaged resources exported with their credentials"
                 );
             }
         }

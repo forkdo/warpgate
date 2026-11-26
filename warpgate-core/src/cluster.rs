@@ -8,7 +8,7 @@ use futures::{SinkExt, StreamExt};
 use poem::IntoResponse;
 use poem::web::websocket::{Message, WebSocket};
 use sea_orm::ActiveValue::Set;
-use sea_orm::sea_query::{Expr, IntoCondition, OnConflict};
+use sea_orm::sea_query::{Expr, ExprTrait, IntoCondition, OnConflict};
 use sea_orm::{ColumnTrait, Condition, DatabaseConnection, EntityTrait, QueryFilter, QuerySelect};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -18,14 +18,14 @@ use tracing::{info, warn};
 use uuid::Uuid;
 use warpgate_ca::{CLUSTER_TLS_SNI_NAME, ClusterTlsIdentity};
 use warpgate_common::http_headers::X_WARPGATE_CLUSTER_NODE;
-use warpgate_common::{NodeId, Protocol, UserSessionId, WarpgateError};
+use warpgate_common::{NodeId, Protocol, UserId, UserSessionId, WarpgateError};
 use warpgate_db_entities::{HttpSession, Node, Parameters, TargetSession, UserSession};
 use warpgate_tls::configure_cluster_tls_connector;
 
 use crate::SessionsFilter;
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
-const REAP_INTERVAL: Duration = Duration::from_secs(15);
+pub const REAP_INTERVAL: Duration = Duration::from_secs(15);
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub const NOTIFICATION_TIMEOUT: Duration = Duration::from_secs(10);
@@ -40,7 +40,7 @@ pub enum ClusterNotification {
     SessionApprovalsChanged,
     WebAuthRequested {
         session_id: UserSessionId,
-        user_id: Uuid,
+        user_id: UserId,
     },
 }
 
@@ -268,7 +268,8 @@ impl Cluster {
         Ok(PeerConnection { tls, addrs, port })
     }
 
-    /// Register this node and spawn heartbeat + reaper tasks
+    /// Registers this node and spawns the heartbeat. The reaper runs in
+    /// [`crate::Services::start_cluster`] so it can close what it ends.
     pub async fn start(self: &Arc<Self>) -> Result<(), WarpgateError> {
         self.heartbeat().await?;
         info!(node_id = %self.node_id, address = %self.address, "Joined cluster");
@@ -276,24 +277,15 @@ impl Cluster {
         tokio::spawn({
             let this = Arc::clone(self);
             async move {
-                let mut interval = tokio::time::interval(HEARTBEAT_INTERVAL);
+                // The first beat was sent above, so skip the interval's immediate tick.
+                let mut interval = tokio::time::interval_at(
+                    tokio::time::Instant::now() + HEARTBEAT_INTERVAL,
+                    HEARTBEAT_INTERVAL,
+                );
                 loop {
                     interval.tick().await;
                     if let Err(error) = this.heartbeat().await {
                         warn!(%error, "Node heartbeat failed");
-                    }
-                }
-            }
-        });
-
-        tokio::spawn({
-            let db = self.db.clone();
-            async move {
-                let mut interval = tokio::time::interval(REAP_INTERVAL);
-                loop {
-                    interval.tick().await;
-                    if let Err(error) = reap(&db).await {
-                        warn!(%error, "Node reaper failed");
                     }
                 }
             }
@@ -392,7 +384,7 @@ const SHARED_SESSION_ORPHAN_GRACE: time::Duration = time::Duration::minutes(5);
 async fn end_connection_bound_sessions(
     db: &DatabaseConnection,
     node_filter: impl IntoCondition,
-) -> Result<(), WarpgateError> {
+) -> Result<Vec<UserSessionId>, WarpgateError> {
     UserSession::revoke_open_matching(
         db,
         Condition::all()
@@ -404,7 +396,9 @@ async fn end_connection_bound_sessions(
 
 /// End unowned (HTTP browser) sessions whose backing is gone: they are kept
 /// alive by their stored cookie sessions, not by any node.
-async fn end_sessions_without_cookie(db: &DatabaseConnection) -> Result<(), WarpgateError> {
+async fn end_sessions_without_cookie(
+    db: &DatabaseConnection,
+) -> Result<Vec<UserSessionId>, WarpgateError> {
     let grace_cutoff = OffsetDateTime::now_utc() - SHARED_SESSION_ORPHAN_GRACE;
     UserSession::revoke_open_matching(
         db,
@@ -457,7 +451,9 @@ pub async fn alive_nodes(db: &DatabaseConnection) -> Result<Vec<Node::Model>, Wa
         .await?)
 }
 
-async fn reap(db: &DatabaseConnection) -> Result<(), WarpgateError> {
+/// Returns the ids of the sessions it ended. Other nodes may still hold live
+/// views of them, which the caller closes.
+pub async fn reap(db: &DatabaseConnection) -> Result<Vec<UserSessionId>, WarpgateError> {
     let cutoff = OffsetDateTime::now_utc() - HEARTBEAT_TIMEOUT;
     // reap dead nodes
     let dead = Node::Entity::delete_many()
@@ -478,13 +474,15 @@ async fn reap(db: &DatabaseConnection) -> Result<(), WarpgateError> {
 
     // At least the current node should have been present - bail
     // intead of ending all sessions
-    if !live.is_empty() {
-        end_connection_bound_sessions(db, UserSession::Column::NodeId.is_not_in(live)).await?;
-    }
+    let mut ended = if live.is_empty() {
+        vec![]
+    } else {
+        end_connection_bound_sessions(db, UserSession::Column::NodeId.is_not_in(live)).await?
+    };
 
-    end_sessions_without_cookie(db).await?;
+    ended.extend(end_sessions_without_cookie(db).await?);
     end_children_of_ended_parents(db).await?;
-    Ok(())
+    Ok(ended)
 }
 
 /// Fallback order
@@ -521,7 +519,7 @@ fn non_empty_env(key: &str) -> Option<String> {
 mod tests {
     use sea_orm::ActiveValue::NotSet;
     use sea_orm::Database;
-    use warpgate_common::Protocol;
+    use warpgate_common::{Protocol, TargetId};
     use warpgate_db_entities::Parameters::{ConfigMigrationValues, set_config_migration_values};
     use warpgate_db_migrations::migrate_database;
 
@@ -540,7 +538,7 @@ mod tests {
             id: Set(warpgate_common::TargetSessionId(id)),
             user_session_id: Set(warpgate_common::UserSessionId(parent)),
             target_snapshot: Set(r#"{"name":"web"}"#.into()),
-            target_id: Set(Uuid::new_v4()),
+            target_id: Set(TargetId(Uuid::new_v4())),
             started: Set(OffsetDateTime::now_utc()),
             ended: Set(None),
             ticket_id: Set(None),
@@ -572,7 +570,7 @@ mod tests {
         UserSession::Entity::insert(UserSession::ActiveModel {
             id: Set(warpgate_common::UserSessionId(id)),
             username: Set(Some("alice".into())),
-            user_id: Set(Some(Uuid::new_v4())),
+            user_id: Set(Some(UserId(Uuid::new_v4()))),
             remote_address: Set("127.0.0.1:1".into()),
             started: Set(started),
             ended: Set(None),
@@ -620,7 +618,7 @@ mod tests {
 
     #[test]
     fn notification_wire_format_is_tagged_by_type() {
-        let user_id = Uuid::new_v4();
+        let user_id = UserId(Uuid::new_v4());
         let msg = ClusterNotification::WebAuthRequested {
             session_id: UserSessionId(Uuid::nil()),
             user_id,
