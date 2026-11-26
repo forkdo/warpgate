@@ -142,7 +142,8 @@ pub enum AuditEvent {
         key_id: String,
         success: bool,
     },
-    /// `kubectl exec` — a command run inside an existing container.
+    /// A command run inside an existing container: `kubectl exec`, or a kubelet
+    /// `/run` through the node proxy.
     KubernetesExecStarted {
         subject: KubernetesAuditSubject,
         namespace: String,
@@ -175,9 +176,10 @@ pub enum AuditEvent {
         /// and an empty list would read as "no ports", which is not the same.
         ports: Option<String>,
     },
-    /// The cluster refused a streaming request — typically RBAC. Recorded
-    /// separately because a denied attempt is exactly as interesting as a
-    /// successful one, and the `...Started` event alone cannot say which it was.
+    /// The cluster refused a streaming request or a kubelet `/run` — typically
+    /// RBAC. Recorded separately because a denied attempt is exactly as
+    /// interesting as a successful one, and the `...Started` event alone cannot
+    /// say which it was.
     KubernetesStreamRejected {
         subject: KubernetesAuditSubject,
         namespace: String,
@@ -199,13 +201,13 @@ pub enum AuditEvent {
         /// argv as a JSON array.
         command: String,
         tty: bool,
-        response_status: u16,
+        /// `None` if the cluster sent no response. The container may still
+        /// have been added.
+        response_status: Option<u16>,
     },
-    /// A `Pod` object was created directly — how `kubectl debug node/...` and
-    /// `kubectl debug --copy-to` land a debug workload. Pods that a workload
-    /// object (Deployment, DaemonSet, Job) creates on the user's behalf are
-    /// not summarised; only the generic request log records those.
-    KubernetesPodCreated {
+    /// Logged as `KubernetesPodCreated1` or `KubernetesPodUpdated1`.
+    KubernetesPodWritten {
+        created: bool,
         subject: KubernetesAuditSubject,
         namespace: String,
         pod: String,
@@ -215,7 +217,23 @@ pub enum AuditEvent {
         host_pid: bool,
         host_network: bool,
         privileged: bool,
-        response_status: u16,
+        response_status: Option<u16>,
+    },
+    KubernetesUnknownRequest {
+        subject: KubernetesAuditSubject,
+        method: String,
+        path: String,
+        namespace: String,
+        /// `None` for a request against the pod collection.
+        pod: Option<String>,
+        content_type: Option<String>,
+        body_length: usize,
+        /// Fixed strings only. A parser's error message would quote the body,
+        /// which can hold secrets.
+        reason: &'static str,
+        /// `None` if the cluster sent no response. The write may still have
+        /// been applied.
+        response_status: Option<u16>,
     },
 }
 
@@ -647,12 +665,13 @@ impl AuditEvent {
                     target_container = target_container.as_deref(),
                     command = %command,
                     tty = %tty,
-                    response_status = %response_status,
+                    response_status = response_status.map(tracing::field::display),
                     "Kubernetes debug container"
                 );
             }
-            Self::KubernetesPodCreated {
+            Self::KubernetesPodWritten {
                 subject,
+                created,
                 namespace,
                 pod,
                 images,
@@ -662,9 +681,14 @@ impl AuditEvent {
                 privileged,
                 response_status,
             } => {
+                let (event_type, message) = if *created {
+                    ("KubernetesPodCreated1", "Kubernetes pod created")
+                } else {
+                    ("KubernetesPodUpdated1", "Kubernetes pod updated")
+                };
                 info!(
                     target: "audit",
-                    _type = "KubernetesPodCreated1",
+                    _type = event_type,
                     session = %subject.session_id,
                     user_id = %subject.user_id,
                     username = %subject.username,
@@ -678,8 +702,39 @@ impl AuditEvent {
                     host_pid = %host_pid,
                     host_network = %host_network,
                     privileged = %privileged,
-                    response_status = %response_status,
-                    "Kubernetes pod created"
+                    response_status = response_status.map(tracing::field::display),
+                    "{message}"
+                );
+            }
+            Self::KubernetesUnknownRequest {
+                subject,
+                method,
+                path,
+                namespace,
+                pod,
+                content_type,
+                body_length,
+                reason,
+                response_status,
+            } => {
+                info!(
+                    target: "audit",
+                    _type = "KubernetesUnknownRequest1",
+                    session = %subject.session_id,
+                    user_id = %subject.user_id,
+                    username = %subject.username,
+                    target_id = %subject.target_id,
+                    target_name = %subject.target_name,
+                    related_users = %format_related_ids(&[subject.user_id]),
+                    method = %method,
+                    path = %path,
+                    namespace = %namespace,
+                    pod = pod.as_deref(),
+                    content_type = content_type.as_deref(),
+                    body_length = %body_length,
+                    reason = %reason,
+                    response_status = response_status.map(tracing::field::display),
+                    "Kubernetes request with an unparseable body"
                 );
             }
         }
