@@ -2,7 +2,7 @@
   "openapi": "3.0.0",
   "info": {
     "title": "Warpgate Web Admin",
-    "version": "v0.30.6-62-g5f540d14-modified"
+    "version": "v0.31.0-beta.1-42-gc0f81ca86-modified"
   },
   "servers": [
     {
@@ -323,16 +323,6 @@
               "application/json; charset=utf-8": {
                 "schema": {
                   "$ref": "#/components/schemas/Role"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "",
-            "content": {
-              "application/json; charset=utf-8": {
-                "schema": {
-                  "type": "string"
                 }
               }
             }
@@ -693,6 +683,16 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -780,6 +780,19 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": ""
           },
           "404": {
             "description": ""
@@ -1679,16 +1692,6 @@
               }
             }
           },
-          "409": {
-            "description": "",
-            "content": {
-              "application/json; charset=utf-8": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
           "400": {
             "description": "",
             "content": {
@@ -2141,16 +2144,6 @@
               "application/json; charset=utf-8": {
                 "schema": {
                   "$ref": "#/components/schemas/TargetGroup"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "",
-            "content": {
-              "application/json; charset=utf-8": {
-                "schema": {
-                  "type": "string"
                 }
               }
             }
@@ -3845,16 +3838,6 @@
               }
             }
           },
-          "409": {
-            "description": "",
-            "content": {
-              "application/json; charset=utf-8": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
           "400": {
             "description": "",
             "content": {
@@ -5521,6 +5504,7 @@
           "id",
           "name",
           "description",
+          "builtin",
           "targets_create",
           "targets_edit",
           "targets_delete",
@@ -5551,6 +5535,9 @@
           },
           "description": {
             "type": "string"
+          },
+          "builtin": {
+            "type": "boolean"
           },
           "targets_create": {
             "type": "boolean"
